@@ -1,0 +1,163 @@
+%--------------------
+% Packages
+% -------------------
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8x]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{mathptmx} % Use Times Font
+
+\usepackage[pdftex]{graphicx}
+\usepackage[english]{babel} % Changed to English
+\usepackage[pdftex,linkcolor=black,pdfborder={0 0 0}]{hyperref}
+\usepackage{calc}
+\usepackage{enumitem}
+\usepackage{amsmath} % For math formatting
+\usepackage{booktabs} % For professional tables
+\usepackage{float} % For precise placement of figures/tables
+
+\frenchspacing % No double spacing between sentences
+\linespread{1.2} % Set linespace
+% Enforcing strict 1cm margins as requested
+\usepackage[a4paper, margin=1cm]{geometry} 
+
+\usepackage[all]{nowidow}
+\usepackage[protrusion=true,expansion=true]{microtype}
+
+\hypersetup{ 	
+pdfsubject = {Probabilistic Machine Learning},
+pdftitle = {Link Prediction: Theory and Applications},
+pdfauthor = {M.Tech Student}
+}
+
+\begin{document}
+
+\begin{center}
+    \LARGE\textbf{Probabilistic Link Prediction in Complex Networks:\\ Theory and Applications}\vspace{0.5em}\\
+    \large\textit{M.Tech Report - Probabilistic Machine Learning}
+\end{center}
+\vspace{1em}
+
+\section{Problem Description}
+Pairwise relationships in graph networks, containing nodes and edges, are critical for modeling real-world interactions like social connections, communication systems, and disease transmission. Missing edges due to data gaps or uncertainties can hinder analyses, leading to biased conclusions such as incorrect shortest path predictions in road networks. Predicting future edge formation is crucial for proactive decision-making, enabling use-cases like targeted vaccination strategies. Addressing missing edges improves the reliability of network analysis across various applications.
+
+
+% Placeholder for a Graph Figure
+% \begin{figure}[H]
+%     \centering
+%     % \includegraphics[width=0.5\textwidth]{your_graph_image.png}
+%     \vspace{3cm} % Remove this vspace when adding your image
+%     \caption{Visualization of the network topology highlighting missing edges (predicted links) vs. observed edges.}
+%     \label{fig:network_topology}
+% \end{figure}
+
+\section{Methodology for Data Preparation}
+
+\subsection{Graph Representation and Structural Parsing}
+The raw training data was provided as a CSV file where each row acts as a positional embedding: the first element denotes the source node ($u$), and succeeding elements denote its outgoing edges. To transform this into a robust probabilistic learning framework, we constructed three primary structural sets:
+\begin{itemize}[noitemsep]
+    \item \textbf{out\_neigh}[$u$]: The set of target nodes that $u$ points to (out-degree).
+    \item \textbf{in\_neigh}[$v$]: The set of source nodes that point to $v$ (in-degree).
+    \item \textbf{und\_neigh}[$u$]: The undirected neighbor set, defined as $\text{out\_neigh}[u] \cup \text{in\_neigh}[u]$.
+\end{itemize}
+Constructing the undirected set is critical because many standard graph similarity metrics (e.g., Jaccard Coefficient, Adamic-Adar index) are defined on undirected topologies. Utilizing the union of directed neighborhoods provides a richer structural context than directed edges alone. 
+
+\subsection{Feature Engineering}
+To capture the underlying data distribution, we extracted 13 hand-crafted topological features for each node pair $(u, v)$. These features are designed to enrich the representational capacity of our models:
+
+\begin{itemize}[noitemsep]
+    \item \textbf{Degree Features (du\_out, dv\_in, du\_und, dv\_und):} Raw node degrees that define the overall 'activeness' of the nodes.
+    \item \textbf{Log Transformations (log1p):} Applied to degree metrics ($\log(1 + x)$) to reduce right-skewness in degree distributions, improving numerical stability and precision.
+    \item \textbf{Common Neighbors (cn\_und):} The intersection of undirected neighbors. A strong heuristic signal implying that nodes sharing friends are likely to connect.
+    \item \textbf{Jaccard Coefficient (jacc):} Measures neighborhood overlap normalized by the union of neighborhoods. Highly effective for local connection density.
+    \item \textbf{Adamic-Adar Index (aa):} Adamic-Adar index, to take into account shared neighbors by their inverse log to reduce the effect of highly connected nodes. This is more robust than Jaccard in real-world networks, where sparsity is a concern.
+    \item \textbf{Preferential Attachment (pa):} Preferential Attachment, product of number of outgoing edges from u and incoming edges to v. This is based on the idea that nodes with higher degrees are more likely to form new edges, similar to "rich get richer" heuristic. This metric helps in capturing global trends in the graph.
+    \item \textbf{Reverse Edge Indicator (rev):} A binary feature indicating whether the reciprocal edge $v \to u$ exists, acting as a strong signal for directed reciprocity.
+\end{itemize}
+
+\subsection{Negative Sampling and Data Validation Pipeline}
+The training dataset contains only positive samples, i.e., node pairs that are connected. To train a calibrated binary classifier, negative samples are mandatory. 
+
+We employed a uniform random negative sampling technique: selecting node pairs $(u, v)$ where no edge exists in the observed training graph. To balance hardware constraints and training latency, the sampling ratio was strictly controlled. The resulting dataset was subjected to an 80/20 train-validation split. This mixed-class dataset forms the foundational pipeline for all subsequent probabilistic modeling.
+
+\section{Experimental Setup and Model Exploration}
+Our methodological progression systematically scales from interpretable linear baselines to complex probabilistic ensembles (integrating Bayesian Neural Networks (BNNs), approximate Gaussian Processes, and tree-based methods). We present our initial baseline explorations to highlight our thought process and the encountered challenges.
+
+\subsection{Baseline Logistic Regression}
+As a starting point, we implemented a baseline Logistic Regression model using Scikit-Learn. Logistic regression inherently outputs calibrated probabilistic weights modeled via the sigmoid function: 
+$$ P(y=1 \mid \mathbf{x}) = \sigma(w_0 + \mathbf{w}^T\mathbf{x}) $$
+We utilized the \texttt{lbfgs} solver for $\mathcal{L}_2$ regularization and set \texttt{class\_weight='balanced'} to counteract any residual class imbalances post-negative sampling. 
+
+\textbf{Observations:} The baseline model achieved a staggering 100\% accuracy on our validation split, yet plummeted to strictly $<50\%$ on the hidden Kaggle test set. This vast discrepancy indicated severe overfitting and potentially a distribution shift between our sampled negatives and the hidden test space. The model was memorizing the training topological noise rather than generalizing probabilistic link formation.
+
+\subsection{Hyperparameter-Tuned Logistic Regression}
+To mitigate the overfitting observed in the baseline, we expanded our pipeline to include exhaustive hyperparameter optimization. We executed a Grid Search with 5-fold cross-validation, probing various regularization penalties ($\mathcal{L}_1$ vs. $\mathcal{L}_2$), inverse regularization strengths ($C$), and convergence bounds (\texttt{max\_iter}).
+
+% Placeholder for Hyperparameters Table
+\begin{table}[H]
+    \centering
+    \caption{Optimal Hyperparameters for Logistic Regression Baseline}
+    \vspace{0.5em}
+    \begin{tabular}{ll}
+        \toprule
+        \textbf{Hyperparameter} & \textbf{Optimal Value} \\
+        \midrule
+        Inverse Regularization Strength ($C$) & 0.1 \\
+        Regularization Penalty & $\mathcal{L}_2$ \\
+        Solver & \texttt{lbfgs} \\
+        Maximum Iterations & 1000 \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:hyperparams}
+\end{table}
+
+\textbf{Observations:} The heavily regularized model ($C=0.1$) constrained the weight magnitudes, curbing the initial overfitting. Consequently, performance on the hidden Kaggle dataset improved to approximately 60\%. However, this remains a sub-optimal score. Since the linear model is unable to achieve higher accuracies, it indicates that this feature space is highly non-linear. This justifies our transition to advanced probabilistic structures, capable of modeling complex feature interactions.
+% -----------------------------------------------------------
+% The user can continue with Section 4: Advanced Probabilistic Models here
+% -----------------------------------------------------------
+
+\section{Bayesian Graph Neural Networks: A Probabilistic Machine Learning Approach}
+
+Graph Neural Networks excel at identifying relationships between nodes and edges in a graph. We take it a level further by incorporating Bayesian learning into the GNN. Through this approach, we can add uncertainty to our predictions, which are valuable for decision-making and understanding model confidence. This approach was developed as part of the PML: Theory and Applications course during our MTech program, where we explored probabilistic machine learning through practical implementation.
+
+BGNNs use probabilistic layers to model uncertainty, making them suitable for tasks like classification, and link prediction. They are especially useful when data is noisy or limited, as they provide uncertainty estimates along with the predictions. In our approach, we build a BGNN using PyTorch and perform hyperparameter tuning using Optuna to optimize model performance. Key components in our BGNN architecture include:
+
+\begin{itemize}
+
+    \item \textbf{Message-Passing in Graph Convolution Networks (GCNs)}
+    \begin{itemize}
+        \item The model updates each node by gathering information from its neighbors.
+        \item The update equation is:
+        \[ h_v^{(l+1)} = \sigma\left(\sum_{u \in \mathcal{N}(v)} \frac{1}{\sqrt{|\mathcal{N}(u)||\mathcal{N}(v)|}} h_u^{(l)} W^{(l)}\right) \]
+        \item This math prevents highly connected nodes from overpowering the network.
+        \item It uses learning weights ($W^{(l)}$) and an activation function ($\sigma$) to understand complex patterns step-by-step.
+    \end{itemize}
+
+    \item \textbf{Handling Uncertainty with Bayesian Layers}
+    \begin{itemize}
+        \item Instead of fixed numbers, the model's weights are treated as probability ranges:
+        \[ w \sim \mathcal{N}(\mu, \sigma^2) \]
+        \item This helps the model show when it is unsure about a prediction, especially if there isn't much training data.
+        \item It provides a measure of reliability without needing overly complicated math.
+    \end{itemize}
+
+    \item \textbf{Connecting Nodes with Edge Features}
+    \begin{itemize}
+        \item To represent a connection between two nodes, the model simply glues their features together:
+        \[ \text{Edge Features} = \text{torch.cat}([u_{\text{feat}}, v_{\text{feat}}]) \]
+        \item This keeps the direction of the relationship clear (for example, separating "A follows B" from "B follows A").
+    \end{itemize}
+
+    \item \textbf{Finding the Best Settings (Optuna)}
+    \begin{itemize}
+        \item A tool called Optuna was used to automatically test different model sizes, learning speeds, and dropout rates.
+        \item The model reached a decent accuracy score of about 0.72.
+        \item However, because training took over 6 hours each time, this method proved too slow and forced a shift to an alternative approach.
+    \end{itemize}
+
+\end{itemize}
+\subsection{Ensemble Strategy as a Practical Compromise}
+
+Tuning of BGNNs, while being crucial, can be computationally expensive, due to which we had to make a trade-off between accuracy and tuning trials. The highest score obtained was approximately 0.72, though we believe the accuracy can go higher but the resource-requirement often exceeds 6 hours per run on GPU hardware-led resources.
+To mitigate these challenges while retaining model robustness, we transitioned to an ensemble-based approach. By combining predictions from multiple models, this strategy effectively approximates Bayesian uncertainty without requiring full probabilistic inference.
+
+\end{document}
